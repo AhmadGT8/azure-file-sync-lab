@@ -8,10 +8,12 @@ param(
 New-Item -ItemType Directory -Force -Path $serverEndpointPath
 
 # 2) Install the File Sync agent
-$agentMsi = "$env:TEMP\StorageSyncAgent.msi"
-Invoke-WebRequest `
-  -Uri "https://download.microsoft.com/download/9/5/4/9547214F-3A27-4226-9C18-01C8A1711235/StorageSyncAgent.msi" `
-  -OutFile $agentMsi
+# Download & silently install the Azure File Sync Agent
+$agentMsiUrl = 'https://github.com/AhmadGT8/azure-file-sync-lab/releases/download/v1.0/StorageSyncAgent.msi'
+$msiPath     = "$env:Temp\StorageSyncAgent.msi"
+Invoke-WebRequest -Uri $agentMsiUrl -OutFile $msiPath
+Start-Process -FilePath 'msiexec.exe' -ArgumentList '/i', $msiPath, '/qn', '/norestart' -Wait
+
 
 Start-Process msiexec.exe `
   -ArgumentList "/i `"$agentMsi`" /quiet /norestart" -Wait
