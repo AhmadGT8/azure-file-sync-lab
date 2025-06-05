@@ -57,20 +57,25 @@ try {
     Write-Host "Proceeding to Azure File Sync agent setup."
 
     # --- Begin Azure File Sync Agent Setup Logic ---
-    # 1) Install / Import Az.Accounts and Az.StorageSync modules if missing
-    Write-Host "Checking/Installing Az PowerShell modules..."
-    if (-not (Get-Module -ListAvailable -Name Az.Accounts)) {
-        Write-Host "Installing Az.Accounts module..."
-        Install-Module -Name Az.Accounts -Confirm:$false -Force -Scope CurrentUser -SkipPublisherCheck -AllowClobber
-    }
-    Import-Module Az.Accounts -ErrorAction Stop
+   # Add this command to pre-install the NuGet provider non-interactively
+Write-Host "Ensuring NuGet provider is installed to prevent interactive prompts..."
+Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force
 
-    if (-not (Get-Module -ListAvailable -Name Az.StorageSync)) {
-        Write-Host "Installing Az.StorageSync module..."
-        Install-Module -Name Az.StorageSync -Confirm:$false -Force -Scope CurrentUser -SkipPublisherCheck -AllowClobber
-    }
-    Import-Module Az.StorageSync -ErrorAction Stop
-    Write-Host "Az PowerShell modules are ready."
+# 1) Install / Import Az.Accounts and Az.StorageSync modules if missing
+Write-Host "Checking/Installing Az PowerShell modules..."
+if (-not (Get-Module -ListAvailable -Name Az.Accounts)) {
+    Write-Host "Installing Az.Accounts module..."
+    # Using -Scope CurrentUser is still the recommended approach here
+    Install-Module -Name Az.Accounts -Confirm:$false -Force -Scope CurrentUser -SkipPublisherCheck -AllowClobber
+}
+Import-Module Az.Accounts -ErrorAction Stop
+
+if (-not (Get-Module -ListAvailable -Name Az.StorageSync)) {
+    Write-Host "Installing Az.StorageSync module..."
+    Install-Module -Name Az.StorageSync -Confirm:$false -Force -Scope CurrentUser -SkipPublisherCheck -AllowClobber
+}
+Import-Module Az.StorageSync -ErrorAction Stop
+Write-Host "Az PowerShell modules are ready."
 
     # 2) Connect via the VM's managed identity
     Write-Host "Connecting to Azure via VM Managed Identity (Subscription: $SubscriptionId, Tenant: $TenantId)..."
