@@ -174,8 +174,14 @@ Write-Host "Az PowerShell modules are ready."
     exit 1 # Explicitly exit with 1 for failure
 } finally {
     # Optional: Clean up downloaded MSI if it still exists and you want to ensure it's gone
-    if (Test-Path -LiteralPath $msiTempPath) {
+    Write-Host "Entering finally block for cleanup..."
+    # Check if $msiTempPath is not null or empty before trying to use it
+    if (-not ([string]::IsNullOrEmpty($msiTempPath)) -and (Test-Path -LiteralPath $msiTempPath)) {
         Write-Host "Cleaning up temporary MSI file: $msiTempPath"
         Remove-Item -Path $msiTempPath -Force -ErrorAction SilentlyContinue
+    } else {
+        Write-Host "MSI temp file path not defined or file does not exist. Skipping cleanup."
     }
+    Write-Host "--- Stopping Transcript ---"
+    Stop-Transcript
 }
