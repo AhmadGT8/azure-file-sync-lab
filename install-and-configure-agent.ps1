@@ -61,13 +61,13 @@ try {
     Write-Host "Checking/Installing Az PowerShell modules..."
     if (-not (Get-Module -ListAvailable -Name Az.Accounts)) {
         Write-Host "Installing Az.Accounts module..."
-        Install-Module -Name Az.Accounts -Confirm:$false -Force -Scope AllUsers -SkipPublisherCheck -AllowClobber
+        Install-Module -Name Az.Accounts -Confirm:$false -Force -Scope CurrentUser -SkipPublisherCheck -AllowClobber
     }
     Import-Module Az.Accounts -ErrorAction Stop
 
     if (-not (Get-Module -ListAvailable -Name Az.StorageSync)) {
         Write-Host "Installing Az.StorageSync module..."
-        Install-Module -Name Az.StorageSync -Confirm:$false -Force -Scope AllUsers -SkipPublisherCheck -AllowClobber
+        Install-Module -Name Az.StorageSync -Confirm:$false -Force -Scope CurrentUser -SkipPublisherCheck -AllowClobber
     }
     Import-Module Az.StorageSync -ErrorAction Stop
     Write-Host "Az PowerShell modules are ready."
