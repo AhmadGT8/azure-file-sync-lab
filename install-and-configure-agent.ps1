@@ -1,3 +1,5 @@
+# Final, Combined Script for Azure File Sync Agent Installation and Configuration
+# This script performs all steps: IE ESC configuration, module setup from a ZIP, and agent installation.
 param (
     [Parameter(Mandatory=$true)][string]$ResourceGroupName,
     [Parameter(Mandatory=$true)][string]$StorageSyncServiceName,
@@ -5,22 +7,47 @@ param (
     [Parameter(Mandatory=$true)][string]$StorageAccountName,
     [Parameter(Mandatory=$true)][string]$FileShareName,
     [Parameter(Mandatory=$true)][string]$SubscriptionId,
-    [Parameter(Mandatory=$true)][string]$TenantId,
-    [Parameter(Mandatory=$false)][string]$VmLocation,
-    [Parameter(Mandatory=$false)][string]$ServerEndpointLocalPath = 'C:\SyncFolder'
+    [Parameter(Mandatory=$true)][string]$TenantId
 )
 
+# Use a reliable path in the system's temp directory for the transcript log file.
 $transcriptLogPath = Join-Path $env:TEMP "AzureFileSync-CSE-Transcript.txt"
 
 try {
+    # Start-Transcript captures ALL console output (including verbose streams and errors) to a log file for easy debugging.
     Start-Transcript -Path $transcriptLogPath -Append
     
     $ErrorActionPreference = 'Stop'
     $global:ProgressPreference = 'SilentlyContinue'
-    Write-Host "--- Starting Script Execution (Log: $transcriptLogPath) ---"
+    Write-Host "--- Starting Script Execution with Pre-Packaged Modules ---"
     Write-Host "Timestamp: $(Get-Date -Format o)"
+    
+    #================================================================================
+    # SECTION 1: PRE-PACKAGED MODULE SETUP
+    #================================================================================
+    # This section unpacks and loads the PowerShell modules from AzureModules.zip,
+    # completely bypassing the problematic Install-Module command.
+    
+    # The AzureModules.zip file is in the same directory as this script after being downloaded by the Custom Script Extension.
+    $modulesZipPath = ".\AzureModules.zip"
+    $modulesInstallPath = Join-Path $env:TEMP "Modules"
 
-    # --- Begin IE ESC Disabling Logic ---
+    Write-Host "Expanding pre-packaged modules from '$modulesZipPath' to '$modulesInstallPath'..."
+    Expand-Archive -Path $modulesZipPath -DestinationPath $modulesInstallPath -Force
+
+    Write-Host "Adding '$modulesInstallPath' to the PowerShell module path for this session..."
+    $env:PSModulePath = "$modulesInstallPath;" + $env:PSModulePath
+
+    Write-Host "Importing Az modules from pre-packaged location..."
+    Import-Module Az.Accounts -ErrorAction Stop
+    Import-Module Az.StorageSync -ErrorAction Stop
+    Write-Host "Az modules imported successfully."
+    
+    #================================================================================
+    # SECTION 2: IE ENHANCED SECURITY CONFIGURATION (ESC)
+    #================================================================================
+    # This section disables IE ESC for easier server management, as discussed.
+    
     Write-Host "Executing IE ESC logic..."
     $installationType = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion').InstallationType
     if ($installationType -ne 'Server Core') {
@@ -31,30 +58,16 @@ try {
         Stop-Process -Name iexplore -ErrorAction SilentlyContinue
     }
     Write-Host "IE ESC logic finished."
-    # --- End IE ESC Logic ---
 
-    # --- Begin Module Installation Logic (REVISED) ---
-    Write-Host "Ensuring NuGet provider is installed..."
-    Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force
+    #================================================================================
+    # SECTION 3: AZURE FILE SYNC AGENT INSTALLATION & REGISTRATION
+    #================================================================================
+    # This is the core logic to download, install, and configure the sync agent.
 
-    # Forcing installation of Az modules to overwrite any corrupted existing modules.
-    # The 'if' check has been removed to ensure this runs every time.
-    Write-Host "Forcing installation/update of Az.Accounts module (using -Scope CurrentUser)..."
-    Install-Module -Name Az.Accounts -Confirm:$false -Force -Scope CurrentUser -SkipPublisherCheck -AllowClobber
-
-    Write-Host "Forcing installation/update of Az.StorageSync module (using -Scope CurrentUser)..."
-    Install-Module -Name Az.StorageSync -Confirm:$false -Force -Scope CurrentUser -SkipPublisherCheck -AllowClobber
-
-    Write-Host "Importing Az modules..."
-    Import-Module Az.Accounts -ErrorAction Stop
-    Import-Module Az.StorageSync -ErrorAction Stop
-    Write-Host "Az PowerShell modules are ready."
-    # --- End Module Installation Logic ---
-
-    # --- Begin Agent Setup Logic (Unchanged from here) ---
     Write-Host "Connecting to Azure via VM Managed Identity..."
     Connect-AzAccount -Identity -SubscriptionId $SubscriptionId -TenantId $TenantId -ErrorAction Stop
     
+    $ServerEndpointLocalPath = 'C:\SyncFolder'
     Write-Host "Ensuring local path '$ServerEndpointLocalPath' exists..."
     if (-not (Test-Path -Path $ServerEndpointLocalPath)) {
         New-Item -ItemType Directory -Force -Path $ServerEndpointLocalPath
@@ -65,48 +78,40 @@ try {
     $agentUri = switch -regex ($osVer.ToString()){
         '^10.0.17763' { "https://aka.ms/afs/agent/Server2019"; break }
         '^10.0.20348' { "https://aka.ms/afs/agent/Server2022"; break }
-        '^10.0.14393' { "https://aka.ms/afs/agent/Server2016"; break }
-        '^6.3.9600'   { "https://aka.ms/afs/agent/Server2012R2"; break }
-        default { throw "Azure File Sync agent is not supported on OS Version: $osVer" }
+        default { throw "OS Version not supported for AFS Agent: $osVer" }
     }
     
     $msiTempPath = Join-Path $env:TEMP "StorageSyncAgent.msi"
-    $msiLogPath = Join-Path $env:TEMP "afsagentmsi.log"
     Write-Host "Downloading agent to '$msiTempPath'..."
     Invoke-WebRequest -Uri $agentUri -OutFile $msiTempPath -UseBasicParsing
     
-    Write-Host "Installing agent (log: '$msiLogPath')..."
-    Start-Process -FilePath "msiexec.exe" -ArgumentList "/i", "`"$msiTempPath`"", "/quiet", "/norestart", "/L*V", "`"$msiLogPath`"" -Wait
+    Write-Host "Installing agent..."
+    Start-Process -FilePath "msiexec.exe" -ArgumentList "/i", "`"$msiTempPath`"", "/quiet", "/norestart" -Wait
 
     Write-Host "Registering server '$($env:COMPUTERNAME)'..."
     Register-AzStorageSyncServer -StorageSyncServiceName $StorageSyncServiceName -ResourceGroupName $ResourceGroupName -ErrorAction Stop
     
-    Write-Host "Retrieving registered server details..."
     $registeredServer = Get-AzStorageSyncServer -StorageSyncServiceName $StorageSyncServiceName -ResourceGroupName $ResourceGroupName -ServerFriendlyName $env:COMPUTERNAME -ErrorAction Stop
-    if (-not $registeredServer) { throw "Failed to retrieve registered server details for '$($env:COMPUTERNAME)'." }
+    if (-not $registeredServer) { throw "Failed to retrieve registered server details." }
 
-    Write-Host "Retrieving storage account '$StorageAccountName'..."
     $storageAccount = Get-AzStorageAccount -ResourceGroupName $ResourceGroupName -Name $StorageAccountName -ErrorAction Stop
     
     $endpointNameSuffix = ($ServerEndpointLocalPath -replace '[:\s]', '_' -replace '__', '_').Trim('_')
     $serverEndpointName = "$($env:COMPUTERNAME)_$endpointNameSuffix"
-    if ($serverEndpointName.Length -gt 128) { $serverEndpointName = $serverEndpointName.Substring(0, 128) }
     
     Write-Host "Creating server endpoint '$serverEndpointName'..."
     New-AzStorageSyncServerEndpoint -ResourceGroupName $ResourceGroupName -StorageSyncServiceName $StorageSyncServiceName -SyncGroupName $SyncGroupName -Name $serverEndpointName -ServerResourceId $registeredServer.ResourceId -StorageAccountResourceId $storageAccount.Id -AzureFileShareName $FileShareName -ServerLocalPath $ServerEndpointLocalPath -ErrorAction Stop
-    Write-Host "Server endpoint created successfully."
-
+    
     Write-Host "--- SCRIPT COMPLETED SUCCESSFULLY ---"
     exit 0
 
 } catch {
     $errorMessage = $_ | Out-String
     Write-Host "---!!! SCRIPT FAILED !!!---"
-    Write-Host "Caught an error. See details below."
     Write-Error $errorMessage
     exit 1
 
 } finally {
-    Write-Host "--- Entering Finally block. Stopping Transcript. ---"
+    Write-Host "--- Stopping Transcript ---"
     Stop-Transcript -ErrorAction SilentlyContinue
 }
