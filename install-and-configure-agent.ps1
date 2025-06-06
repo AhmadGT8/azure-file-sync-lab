@@ -10,26 +10,20 @@ param (
     [Parameter(Mandatory=$false)][string]$ServerEndpointLocalPath = 'C:\SyncFolder'
 )
 
-# Use a reliable path in the system's temp directory for the transcript log file.
-# The TEMP environment variable is always writable.
 $transcriptLogPath = Join-Path $env:TEMP "AzureFileSync-CSE-Transcript.txt"
 
 try {
-    # Start transcription INSIDE the 'try' block.
-    # If this fails (e.g., due to a very unusual permissions issue), the 'catch' block will now handle it.
     Start-Transcript -Path $transcriptLogPath -Append
     
     $ErrorActionPreference = 'Stop'
     $global:ProgressPreference = 'SilentlyContinue'
     Write-Host "--- Starting Script Execution (Log: $transcriptLogPath) ---"
     Write-Host "Timestamp: $(Get-Date -Format o)"
-    Write-Host "Parameters received: RG='$ResourceGroupName', SSSvc='$StorageSyncServiceName', SyncGroup='$SyncGroupName', SA='$StorageAccountName', Share='$FileShareName'"
 
     # --- Begin IE ESC Disabling Logic ---
     Write-Host "Executing IE ESC logic..."
     $installationType = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion').InstallationType
     if ($installationType -ne 'Server Core') {
-        # ... (IE ESC logic as before)
         $keyPath1 = 'HKLM:\SOFTWARE\Microsoft\Active Setup\Installed Components\{A509B1A7-37EF-4b3f-8CFC-4F3A74704073}'
         $keyPath2 = 'HKLM:\SOFTWARE\Microsoft\Active Setup\Installed Components\{A509B1A8-37EF-4b3f-8CFC-4F3A74704073}'
         if (Test-Path $keyPath1) { Set-ItemProperty -Path $keyPath1 -Name 'IsInstalled' -Value 0 -Force }
@@ -39,28 +33,28 @@ try {
     Write-Host "IE ESC logic finished."
     # --- End IE ESC Logic ---
 
-    # --- Begin Module Installation Logic ---
+    # --- Begin Module Installation Logic (REVISED) ---
     Write-Host "Ensuring NuGet provider is installed..."
     Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force
-    
-    Write-Host "Checking/Installing Az PowerShell modules (using -Scope CurrentUser)..."
-    if (-not (Get-Module -ListAvailable -Name Az.Accounts)) {
-        Install-Module -Name Az.Accounts -Confirm:$false -Force -Scope CurrentUser -SkipPublisherCheck -AllowClobber
-    }
-    Import-Module Az.Accounts -ErrorAction Stop
 
-    if (-not (Get-Module -ListAvailable -Name Az.StorageSync)) {
-        Install-Module -Name Az.StorageSync -Confirm:$false -Force -Scope CurrentUser -SkipPublisherCheck -AllowClobber
-    }
+    # Forcing installation of Az modules to overwrite any corrupted existing modules.
+    # The 'if' check has been removed to ensure this runs every time.
+    Write-Host "Forcing installation/update of Az.Accounts module (using -Scope CurrentUser)..."
+    Install-Module -Name Az.Accounts -Confirm:$false -Force -Scope CurrentUser -SkipPublisherCheck -AllowClobber
+
+    Write-Host "Forcing installation/update of Az.StorageSync module (using -Scope CurrentUser)..."
+    Install-Module -Name Az.StorageSync -Confirm:$false -Force -Scope CurrentUser -SkipPublisherCheck -AllowClobber
+
+    Write-Host "Importing Az modules..."
+    Import-Module Az.Accounts -ErrorAction Stop
     Import-Module Az.StorageSync -ErrorAction Stop
     Write-Host "Az PowerShell modules are ready."
     # --- End Module Installation Logic ---
 
-    # --- Begin Agent Setup Logic ---
+    # --- Begin Agent Setup Logic (Unchanged from here) ---
     Write-Host "Connecting to Azure via VM Managed Identity..."
     Connect-AzAccount -Identity -SubscriptionId $SubscriptionId -TenantId $TenantId -ErrorAction Stop
-    Write-Host "Successfully connected to Azure."
-
+    
     Write-Host "Ensuring local path '$ServerEndpointLocalPath' exists..."
     if (-not (Test-Path -Path $ServerEndpointLocalPath)) {
         New-Item -ItemType Directory -Force -Path $ServerEndpointLocalPath
@@ -75,8 +69,7 @@ try {
         '^6.3.9600'   { "https://aka.ms/afs/agent/Server2012R2"; break }
         default { throw "Azure File Sync agent is not supported on OS Version: $osVer" }
     }
-    Write-Host "Agent download URI: $agentUri"
-
+    
     $msiTempPath = Join-Path $env:TEMP "StorageSyncAgent.msi"
     $msiLogPath = Join-Path $env:TEMP "afsagentmsi.log"
     Write-Host "Downloading agent to '$msiTempPath'..."
@@ -102,7 +95,6 @@ try {
     Write-Host "Creating server endpoint '$serverEndpointName'..."
     New-AzStorageSyncServerEndpoint -ResourceGroupName $ResourceGroupName -StorageSyncServiceName $StorageSyncServiceName -SyncGroupName $SyncGroupName -Name $serverEndpointName -ServerResourceId $registeredServer.ResourceId -StorageAccountResourceId $storageAccount.Id -AzureFileShareName $FileShareName -ServerLocalPath $ServerEndpointLocalPath -ErrorAction Stop
     Write-Host "Server endpoint created successfully."
-    # --- End Agent Setup Logic ---
 
     Write-Host "--- SCRIPT COMPLETED SUCCESSFULLY ---"
     exit 0
@@ -111,11 +103,10 @@ try {
     $errorMessage = $_ | Out-String
     Write-Host "---!!! SCRIPT FAILED !!!---"
     Write-Host "Caught an error. See details below."
-    Write-Error $errorMessage # This will be captured in the transcript and by CSE
+    Write-Error $errorMessage
     exit 1
 
 } finally {
-    # This will now run regardless and will not throw an error if transcription wasn't started.
     Write-Host "--- Entering Finally block. Stopping Transcript. ---"
     Stop-Transcript -ErrorAction SilentlyContinue
 }
