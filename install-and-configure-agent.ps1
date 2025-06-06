@@ -1,5 +1,4 @@
-# Final, Combined Script for Azure File Sync Agent Installation and Configuration
-# This script performs all steps: IE ESC configuration, module setup from a ZIP, and agent installation.
+# Final version of install-and-configure-agent.ps1 (Pre-Packaged Method with ZIP structure fix)
 param (
     [Parameter(Mandatory=$true)][string]$ResourceGroupName,
     [Parameter(Mandatory=$true)][string]$StorageSyncServiceName,
@@ -10,33 +9,38 @@ param (
     [Parameter(Mandatory=$true)][string]$TenantId
 )
 
-# Use a reliable path in the system's temp directory for the transcript log file.
 $transcriptLogPath = Join-Path $env:TEMP "AzureFileSync-CSE-Transcript.txt"
 
 try {
-    # Start-Transcript captures ALL console output (including verbose streams and errors) to a log file for easy debugging.
     Start-Transcript -Path $transcriptLogPath -Append
     
     $ErrorActionPreference = 'Stop'
     $global:ProgressPreference = 'SilentlyContinue'
     Write-Host "--- Starting Script Execution with Pre-Packaged Modules ---"
-    Write-Host "Timestamp: $(Get-Date -Format o)"
     
     #================================================================================
     # SECTION 1: PRE-PACKAGED MODULE SETUP
     #================================================================================
-    # This section unpacks and loads the PowerShell modules from AzureModules.zip,
-    # completely bypassing the problematic Install-Module command.
-    
-    # The AzureModules.zip file is in the same directory as this script after being downloaded by the Custom Script Extension.
     $modulesZipPath = ".\AzureModules.zip"
     $modulesInstallPath = Join-Path $env:TEMP "Modules"
 
     Write-Host "Expanding pre-packaged modules from '$modulesZipPath' to '$modulesInstallPath'..."
     Expand-Archive -Path $modulesZipPath -DestinationPath $modulesInstallPath -Force
 
-    Write-Host "Adding '$modulesInstallPath' to the PowerShell module path for this session..."
-    $env:PSModulePath = "$modulesInstallPath;" + $env:PSModulePath
+    # --- Logic to handle a common zipping mistake (nested parent folder) ---
+    $actualModulePath = $modulesInstallPath
+    $potentialNestedPath = Join-Path $modulesInstallPath "AzureModules"
+    if (Test-Path $potentialNestedPath) {
+        Write-Warning "Detected a nested 'AzureModules' folder. Adjusting module path to point to the nested folder."
+        $actualModulePath = $potentialNestedPath
+    }
+    # Log the contents of the final module path for debugging
+    Write-Host "Listing contents of final module path '$actualModulePath':"
+    Get-ChildItem -Path $actualModulePath | Select-Object Name | Out-String | Write-Host
+    # --- End nested folder logic ---
+
+    Write-Host "Adding '$actualModulePath' to the PowerShell module path for this session..."
+    $env:PSModulePath = "$actualModulePath;" + $env:PSModulePath
 
     Write-Host "Importing Az modules from pre-packaged location..."
     Import-Module Az.Accounts -ErrorAction Stop
@@ -46,8 +50,6 @@ try {
     #================================================================================
     # SECTION 2: IE ENHANCED SECURITY CONFIGURATION (ESC)
     #================================================================================
-    # This section disables IE ESC for easier server management, as discussed.
-    
     Write-Host "Executing IE ESC logic..."
     $installationType = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion').InstallationType
     if ($installationType -ne 'Server Core') {
@@ -62,8 +64,6 @@ try {
     #================================================================================
     # SECTION 3: AZURE FILE SYNC AGENT INSTALLATION & REGISTRATION
     #================================================================================
-    # This is the core logic to download, install, and configure the sync agent.
-
     Write-Host "Connecting to Azure via VM Managed Identity..."
     Connect-AzAccount -Identity -SubscriptionId $SubscriptionId -TenantId $TenantId -ErrorAction Stop
     
