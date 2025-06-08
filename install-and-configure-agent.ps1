@@ -1,4 +1,4 @@
-# Final version of install-and-configure-agent.ps1 (Pre-Packaged Method with ZIP structure fix)
+# Final version of install-and-configure-agent.ps1 (Includes Az.Storage module)
 param (
     [Parameter(Mandatory=$true)][string]$ResourceGroupName,
     [Parameter(Mandatory=$true)][string]$StorageSyncServiceName,
@@ -34,10 +34,8 @@ try {
         Write-Warning "Detected a nested 'AzureModules' folder. Adjusting module path to point to the nested folder."
         $actualModulePath = $potentialNestedPath
     }
-    # Log the contents of the final module path for debugging
     Write-Host "Listing contents of final module path '$actualModulePath':"
     Get-ChildItem -Path $actualModulePath | Select-Object Name | Out-String | Write-Host
-    # --- End nested folder logic ---
 
     Write-Host "Adding '$actualModulePath' to the PowerShell module path for this session..."
     $env:PSModulePath = "$actualModulePath;" + $env:PSModulePath
@@ -45,6 +43,7 @@ try {
     Write-Host "Importing Az modules from pre-packaged location..."
     Import-Module Az.Accounts -ErrorAction Stop
     Import-Module Az.StorageSync -ErrorAction Stop
+    Import-Module Az.Storage -ErrorAction Stop # <-- ADDED THIS LINE
     Write-Host "Az modules imported successfully."
     
     #================================================================================
@@ -68,10 +67,7 @@ try {
     Connect-AzAccount -Identity -SubscriptionId $SubscriptionId -TenantId $TenantId -ErrorAction Stop
     
     $ServerEndpointLocalPath = 'C:\SyncFolder'
-    Write-Host "Ensuring local path '$ServerEndpointLocalPath' exists..."
-    if (-not (Test-Path -Path $ServerEndpointLocalPath)) {
-        New-Item -ItemType Directory -Force -Path $ServerEndpointLocalPath
-    }
+    if (-not (Test-Path -Path $ServerEndpointLocalPath)) { New-Item -ItemType Directory -Force -Path $ServerEndpointLocalPath }
 
     Write-Host "Determining OS version for agent download..."
     $osVer = [System.Environment]::OSVersion.Version
@@ -82,10 +78,8 @@ try {
     }
     
     $msiTempPath = Join-Path $env:TEMP "StorageSyncAgent.msi"
-    Write-Host "Downloading agent to '$msiTempPath'..."
     Invoke-WebRequest -Uri $agentUri -OutFile $msiTempPath -UseBasicParsing
     
-    Write-Host "Installing agent..."
     Start-Process -FilePath "msiexec.exe" -ArgumentList "/i", "`"$msiTempPath`"", "/quiet", "/norestart" -Wait
 
     Write-Host "Registering server '$($env:COMPUTERNAME)'..."
