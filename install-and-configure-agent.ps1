@@ -1,10 +1,10 @@
-# Final version of install-and-configure-agent.ps1 (Includes Az.Storage module)
+# Final Corrected version of install-and-configure-agent.ps1
 param (
     [Parameter(Mandatory=$true)][string]$ResourceGroupName,
     [Parameter(Mandatory=$true)][string]$StorageSyncServiceName,
     [Parameter(Mandatory=$true)][string]$SyncGroupName,
-    [Parameter(Mandatory=$true)][string]$StorageAccountName,
-    [Parameter(Mandatory=$true)][string]$FileShareName,
+    [Parameter(Mandatory=$true)][string]$StorageAccountName, # Kept for potential future use, but not used by this script
+    [Parameter(Mandatory=$true)][string]$FileShareName, # Kept for potential future use, but not used by this script
     [Parameter(Mandatory=$true)][string]$SubscriptionId,
     [Parameter(Mandatory=$true)][string]$TenantId
 )
@@ -16,7 +16,7 @@ try {
     
     $ErrorActionPreference = 'Stop'
     $global:ProgressPreference = 'SilentlyContinue'
-    Write-Host "--- Starting Script Execution with Pre-Packaged Modules ---"
+    Write-Host "--- Starting Script Execution ---"
     
     #================================================================================
     # SECTION 1: PRE-PACKAGED MODULE SETUP
@@ -24,26 +24,19 @@ try {
     $modulesZipPath = ".\AzureModules.zip"
     $modulesInstallPath = Join-Path $env:TEMP "Modules"
 
-    Write-Host "Expanding pre-packaged modules from '$modulesZipPath' to '$modulesInstallPath'..."
     Expand-Archive -Path $modulesZipPath -DestinationPath $modulesInstallPath -Force
 
-    # --- Logic to handle a common zipping mistake (nested parent folder) ---
     $actualModulePath = $modulesInstallPath
-    $potentialNestedPath = Join-Path $modulesInstallPath "AzureModules"
-    if (Test-Path $potentialNestedPath) {
-        Write-Warning "Detected a nested 'AzureModules' folder. Adjusting module path to point to the nested folder."
-        $actualModulePath = $potentialNestedPath
+    $unzippedItems = Get-ChildItem -Path $modulesInstallPath
+    if (($unzippedItems.Count -eq 1) -and ($unzippedItems[0].PSIsContainer)) {
+        $actualModulePath = $unzippedItems[0].FullName
     }
-    Write-Host "Listing contents of final module path '$actualModulePath':"
-    Get-ChildItem -Path $actualModulePath | Select-Object Name | Out-String | Write-Host
-
-    Write-Host "Adding '$actualModulePath' to the PowerShell module path for this session..."
+    
     $env:PSModulePath = "$actualModulePath;" + $env:PSModulePath
 
     Write-Host "Importing Az modules from pre-packaged location..."
     Import-Module Az.Accounts -ErrorAction Stop
     Import-Module Az.StorageSync -ErrorAction Stop
-    Import-Module Az.Storage -ErrorAction Stop # <-- ADDED THIS LINE
     Write-Host "Az modules imported successfully."
     
     #================================================================================
@@ -88,13 +81,19 @@ try {
     $registeredServer = Get-AzStorageSyncServer -StorageSyncServiceName $StorageSyncServiceName -ResourceGroupName $ResourceGroupName | Where-Object { $_.FriendlyName -eq $env:COMPUTERNAME }
     if (-not $registeredServer) { throw "Failed to retrieve registered server details." }
 
-    $storageAccount = Get-AzStorageAccount -ResourceGroupName $ResourceGroupName -Name $StorageAccountName -ErrorAction Stop
-    
     $endpointNameSuffix = ($ServerEndpointLocalPath -replace '[:\s]', '_' -replace '__', '_').Trim('_')
     $serverEndpointName = "$($env:COMPUTERNAME)_$endpointNameSuffix"
     
+    # --- CORRECTED New-AzStorageSyncServerEndpoint Command ---
     Write-Host "Creating server endpoint '$serverEndpointName'..."
-    New-AzStorageSyncServerEndpoint -ResourceGroupName $ResourceGroupName -StorageSyncServiceName $StorageSyncServiceName -SyncGroupName $SyncGroupName -Name $serverEndpointName -ServerResourceId $registeredServer.ResourceId -StorageAccountResourceId $storageAccount.Id -AzureFileShareName $FileShareName -ServerLocalPath $ServerEndpointLocalPath -ErrorAction Stop
+    New-AzStorageSyncServerEndpoint -ResourceGroupName $ResourceGroupName `
+        -StorageSyncServiceName $StorageSyncServiceName `
+        -SyncGroupName $SyncGroupName `
+        -Name $serverEndpointName `
+        -ServerResourceId $registeredServer.ResourceId `
+        -ServerLocalPath $ServerEndpointLocalPath `
+        -ErrorAction Stop
+    # --- END CORRECTION ---
     
     Write-Host "--- SCRIPT COMPLETED SUCCESSFULLY ---"
     exit 0
