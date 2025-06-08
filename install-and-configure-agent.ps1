@@ -91,7 +91,7 @@ try {
     Write-Host "Registering server '$($env:COMPUTERNAME)'..."
     Register-AzStorageSyncServer -StorageSyncServiceName $StorageSyncServiceName -ResourceGroupName $ResourceGroupName -ErrorAction Stop
     
-    $registeredServer = Get-AzStorageSyncServer -StorageSyncServiceName $StorageSyncServiceName -ResourceGroupName $ResourceGroupName -ServerFriendlyName $env:COMPUTERNAME -ErrorAction Stop
+    $registeredServer = Get-AzStorageSyncServer -StorageSyncServiceName $StorageSyncServiceName -ResourceGroupName $ResourceGroupName | Where-Object { $_.FriendlyName -eq $env:COMPUTERNAME }
     if (-not $registeredServer) { throw "Failed to retrieve registered server details." }
 
     $storageAccount = Get-AzStorageAccount -ResourceGroupName $ResourceGroupName -Name $StorageAccountName -ErrorAction Stop
