@@ -1,10 +1,10 @@
-# Final Corrected version of install-and-configure-agent.ps1
+# Final version of install-and-configure-agent.ps1 (With Retry Logic for Sync Group)
 param (
     [Parameter(Mandatory=$true)][string]$ResourceGroupName,
     [Parameter(Mandatory=$true)][string]$StorageSyncServiceName,
     [Parameter(Mandatory=$true)][string]$SyncGroupName,
-    [Parameter(Mandatory=$true)][string]$StorageAccountName, # Kept for potential future use, but not used by this script
-    [Parameter(Mandatory=$true)][string]$FileShareName, # Kept for potential future use, but not used by this script
+    [Parameter(Mandatory=$true)][string]$StorageAccountName,
+    [Parameter(Mandatory=$true)][string]$FileShareName,
     [Parameter(Mandatory=$true)][string]$SubscriptionId,
     [Parameter(Mandatory=$true)][string]$TenantId
 )
@@ -23,7 +23,6 @@ try {
     #================================================================================
     $modulesZipPath = ".\AzureModules.zip"
     $modulesInstallPath = Join-Path $env:TEMP "Modules"
-
     Expand-Archive -Path $modulesZipPath -DestinationPath $modulesInstallPath -Force
 
     $actualModulePath = $modulesInstallPath
@@ -34,7 +33,6 @@ try {
     
     $env:PSModulePath = "$actualModulePath;" + $env:PSModulePath
 
-    Write-Host "Importing Az modules from pre-packaged location..."
     Import-Module Az.Accounts -ErrorAction Stop
     Import-Module Az.StorageSync -ErrorAction Stop
     Write-Host "Az modules imported successfully."
@@ -43,6 +41,7 @@ try {
     # SECTION 2: IE ENHANCED SECURITY CONFIGURATION (ESC)
     #================================================================================
     Write-Host "Executing IE ESC logic..."
+    # ... (IE ESC logic remains the same) ...
     $installationType = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion').InstallationType
     if ($installationType -ne 'Server Core') {
         $keyPath1 = 'HKLM:\SOFTWARE\Microsoft\Active Setup\Installed Components\{A509B1A7-37EF-4b3f-8CFC-4F3A74704073}'
@@ -62,17 +61,15 @@ try {
     $ServerEndpointLocalPath = 'C:\SyncFolder'
     if (-not (Test-Path -Path $ServerEndpointLocalPath)) { New-Item -ItemType Directory -Force -Path $ServerEndpointLocalPath }
 
-    Write-Host "Determining OS version for agent download..."
+    # ... (Agent Download and Install logic remains the same) ...
     $osVer = [System.Environment]::OSVersion.Version
     $agentUri = switch -regex ($osVer.ToString()){
         '^10.0.17763' { "https://aka.ms/afs/agent/Server2019"; break }
         '^10.0.20348' { "https://aka.ms/afs/agent/Server2022"; break }
         default { throw "OS Version not supported for AFS Agent: $osVer" }
     }
-    
     $msiTempPath = Join-Path $env:TEMP "StorageSyncAgent.msi"
     Invoke-WebRequest -Uri $agentUri -OutFile $msiTempPath -UseBasicParsing
-    
     Start-Process -FilePath "msiexec.exe" -ArgumentList "/i", "`"$msiTempPath`"", "/quiet", "/norestart" -Wait
 
     Write-Host "Registering server '$($env:COMPUTERNAME)'..."
@@ -81,10 +78,31 @@ try {
     $registeredServer = Get-AzStorageSyncServer -StorageSyncServiceName $StorageSyncServiceName -ResourceGroupName $ResourceGroupName | Where-Object { $_.FriendlyName -eq $env:COMPUTERNAME }
     if (-not $registeredServer) { throw "Failed to retrieve registered server details." }
 
+    # --- NEW: Retry loop to handle resource propagation delay for the Sync Group ---
+    $maxRetries = 8
+    $retryDelaySeconds = 15
+    $syncGroup = $null
+
+    Write-Host "Verifying Sync Group '$SyncGroupName' exists before creating server endpoint..."
+    for ($i=1; $i -le $maxRetries; $i++) {
+        $syncGroup = Get-AzStorageSyncGroup -ResourceGroupName $ResourceGroupName -StorageSyncServiceName $StorageSyncServiceName -Name $SyncGroupName -ErrorAction SilentlyContinue
+        if ($syncGroup) {
+            Write-Host "Successfully found Sync Group '$SyncGroupName' on attempt $i."
+            break
+        } else {
+            Write-Warning "Sync Group '$SyncGroupName' not found on attempt $i of $maxRetries. Waiting for $retryDelaySeconds seconds before retrying..."
+            Start-Sleep -Seconds $retryDelaySeconds
+        }
+    }
+
+    if (-not $syncGroup) {
+        throw "Failed to find Sync Group '$SyncGroupName' after $maxRetries attempts. The resource may not have been provisioned correctly or there is a significant propagation delay."
+    }
+    # --- END NEW LOGIC ---
+    
     $endpointNameSuffix = ($ServerEndpointLocalPath -replace '[:\s]', '_' -replace '__', '_').Trim('_')
     $serverEndpointName = "$($env:COMPUTERNAME)_$endpointNameSuffix"
     
-    # --- CORRECTED New-AzStorageSyncServerEndpoint Command ---
     Write-Host "Creating server endpoint '$serverEndpointName'..."
     New-AzStorageSyncServerEndpoint -ResourceGroupName $ResourceGroupName `
         -StorageSyncServiceName $StorageSyncServiceName `
@@ -93,7 +111,6 @@ try {
         -ServerResourceId $registeredServer.ResourceId `
         -ServerLocalPath $ServerEndpointLocalPath `
         -ErrorAction Stop
-    # --- END CORRECTION ---
     
     Write-Host "--- SCRIPT COMPLETED SUCCESSFULLY ---"
     exit 0
