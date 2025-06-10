@@ -1,4 +1,4 @@
-# Final version of install-and-configure-agent.ps1 (With Retry Logic for Sync Group)
+# Final version of install-and-configure-agent.ps1 (With Specific Cloud Endpoint Retry Logic)
 param (
     [Parameter(Mandatory=$true)][string]$ResourceGroupName,
     [Parameter(Mandatory=$true)][string]$StorageSyncServiceName,
@@ -6,7 +6,8 @@ param (
     [Parameter(Mandatory=$true)][string]$StorageAccountName,
     [Parameter(Mandatory=$true)][string]$FileShareName,
     [Parameter(Mandatory=$true)][string]$SubscriptionId,
-    [Parameter(Mandatory=$true)][string]$TenantId
+    [Parameter(Mandatory=$true)][string]$TenantId,
+    [Parameter(Mandatory=$true)][string]$VmLocation
 )
 
 $transcriptLogPath = Join-Path $env:TEMP "AzureFileSync-CSE-Transcript.txt"
@@ -41,7 +42,6 @@ try {
     # SECTION 2: IE ENHANCED SECURITY CONFIGURATION (ESC)
     #================================================================================
     Write-Host "Executing IE ESC logic..."
-    # ... (IE ESC logic remains the same) ...
     $installationType = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion').InstallationType
     if ($installationType -ne 'Server Core') {
         $keyPath1 = 'HKLM:\SOFTWARE\Microsoft\Active Setup\Installed Components\{A509B1A7-37EF-4b3f-8CFC-4F3A74704073}'
@@ -61,7 +61,7 @@ try {
     $ServerEndpointLocalPath = 'C:\SyncFolder'
     if (-not (Test-Path -Path $ServerEndpointLocalPath)) { New-Item -ItemType Directory -Force -Path $ServerEndpointLocalPath }
 
-    # ... (Agent Download and Install logic remains the same) ...
+    # ... (Agent Download and Install logic is correct and remains the same) ...
     $osVer = [System.Environment]::OSVersion.Version
     $agentUri = switch -regex ($osVer.ToString()){
         '^10.0.17763' { "https://aka.ms/afs/agent/Server2019"; break }
@@ -78,27 +78,27 @@ try {
     $registeredServer = Get-AzStorageSyncServer -StorageSyncServiceName $StorageSyncServiceName -ResourceGroupName $ResourceGroupName | Where-Object { $_.FriendlyName -eq $env:COMPUTERNAME }
     if (-not $registeredServer) { throw "Failed to retrieve registered server details." }
 
-    # --- NEW: Retry loop to handle resource propagation delay for the Sync Group ---
+    # --- FINAL FIX: Retry loop to wait for the Cloud Endpoint to be visible ---
     $maxRetries = 8
-    $retryDelaySeconds = 15
-    $syncGroup = $null
+    $retryDelaySeconds = 20
+    $cloudEndpoint = $null
+    # The Cloud Endpoint name in the ARM template is 'cloudEndpoint'
+    $cloudEndpointName = "cloudEndpoint"
 
-    Write-Host "Verifying Sync Group '$SyncGroupName' exists before creating server endpoint..."
+    Write-Host "Verifying Cloud Endpoint '$cloudEndpointName' exists in Sync Group '$SyncGroupName'..."
     for ($i=1; $i -le $maxRetries; $i++) {
-        $syncGroup = Get-AzStorageSyncGroup -ResourceGroupName $ResourceGroupName -StorageSyncServiceName $StorageSyncServiceName -Name $SyncGroupName -ErrorAction SilentlyContinue
-        if ($syncGroup) {
-            Write-Host "Successfully found Sync Group '$SyncGroupName' on attempt $i."
+        $cloudEndpoint = Get-AzStorageSyncCloudEndpoint -ResourceGroupName $ResourceGroupName -StorageSyncServiceName $StorageSyncServiceName -SyncGroupName $SyncGroupName -Name $cloudEndpointName -ErrorAction SilentlyContinue
+        if ($cloudEndpoint) {
+            Write-Host "Successfully found Cloud Endpoint '$cloudEndpointName' on attempt $i."
             break
+        }
+        if ($i -lt $maxRetries) {
+             Write-Warning "Cloud Endpoint '$cloudEndpointName' not found on attempt $i. This is likely a propagation delay. Waiting $retryDelaySeconds seconds..."
+             Start-Sleep -Seconds $retryDelaySeconds
         } else {
-            Write-Warning "Sync Group '$SyncGroupName' not found on attempt $i of $maxRetries. Waiting for $retryDelaySeconds seconds before retrying..."
-            Start-Sleep -Seconds $retryDelaySeconds
+            throw "Failed to find Cloud Endpoint '$cloudEndpointName' in Sync Group '$SyncGroupName' after $maxRetries attempts."
         }
     }
-
-    if (-not $syncGroup) {
-        throw "Failed to find Sync Group '$SyncGroupName' after $maxRetries attempts. The resource may not have been provisioned correctly or there is a significant propagation delay."
-    }
-    # --- END NEW LOGIC ---
     
     $endpointNameSuffix = ($ServerEndpointLocalPath -replace '[:\s]', '_' -replace '__', '_').Trim('_')
     $serverEndpointName = "$($env:COMPUTERNAME)_$endpointNameSuffix"
@@ -117,7 +117,6 @@ try {
 
 } catch {
     $errorMessage = $_ | Out-String
-    Write-Host "---!!! SCRIPT FAILED !!!---"
     Write-Error $errorMessage
     exit 1
 
