@@ -1,4 +1,4 @@
-# Final version of install-and-configure-agent.ps1 (With Defender Exclusion)
+# Final version of install-and-configure-agent.ps1 (With Network Lockdown Step)
 param (
     [Parameter(Mandatory=$true)][string]$ResourceGroupName,
     [Parameter(Mandatory=$true)][string]$StorageSyncServiceName,
@@ -20,7 +20,7 @@ try {
     Write-Host "--- Starting Script Execution ---"
     
     #================================================================================
-    # SECTION 1 & 2: Modules and IE ESC (Working Correctly)
+    # Sections 1 & 2: Modules, IE ESC (These are all working correctly)
     #================================================================================
     $modulesZipPath = ".\AzureModules.zip"
     $modulesInstallPath = Join-Path $env:TEMP "Modules"
@@ -55,16 +55,9 @@ try {
         '^10.0.20348' { "https://aka.ms/afs/agent/Server2022"; break }
         default { throw "OS Version not supported for AFS Agent: $osVer" }
     }
-    
     $msiTempPath = Join-Path $env:TEMP "StorageSyncAgent.msi"
     Invoke-WebRequest -Uri $agentUri -OutFile $msiTempPath -UseBasicParsing
     Start-Process -FilePath "msiexec.exe" -ArgumentList "/i", "`"$msiTempPath`"", "/quiet", "/norestart" -Wait
-    
-    # --- FINAL FIX: Add a process exclusion for the File Sync agent in Microsoft Defender ---
-    Write-Host "Adding Microsoft Defender exclusion for the File Sync service process..."
-    Add-MpPreference -ExclusionProcess "filesyncsvc.exe"
-    Write-Host "Defender exclusion added."
-    # --- END FINAL FIX ---
 
     Write-Host "Registering server '$($env:COMPUTERNAME)'..."
     Register-AzStorageSyncServer -StorageSyncServiceName $StorageSyncServiceName -ResourceGroupName $ResourceGroupName -ErrorAction Stop
@@ -74,7 +67,6 @@ try {
 
     $cloudEndpointName = "cloudEndpoint"
     Write-Host "Verifying Cloud Endpoint '$cloudEndpointName' exists..."
-    # ... (Retry logic for cloud endpoint remains the same) ...
     $maxRetries = 8; $retryDelaySeconds = 20
     for ($i=1; $i -le $maxRetries; $i++) {
         $cloudEndpoint = Get-AzStorageSyncCloudEndpoint -ResourceGroupName $ResourceGroupName -StorageSyncServiceName $StorageSyncServiceName -SyncGroupName $SyncGroupName -Name $cloudEndpointName -ErrorAction SilentlyContinue
@@ -94,6 +86,13 @@ try {
         -ServerLocalPath $ServerEndpointLocalPath `
         -ErrorAction Stop
     
+    #================================================================================
+    # SECTION 4: FINAL NETWORK LOCKDOWN
+    #================================================================================
+    Write-Host "Server and endpoint are configured. Locking down Storage Sync Service to private endpoints only..."
+    Set-AzStorageSyncService -ResourceGroupName $ResourceGroupName -Name $StorageSyncServiceName -IncomingTrafficPolicy AllowVirtualNetworksOnly
+    Write-Host "Storage Sync Service network policy has been set to 'AllowVirtualNetworksOnly'."
+        
     Write-Host "--- SCRIPT COMPLETED SUCCESSFULLY ---"
     exit 0
 
@@ -103,5 +102,6 @@ try {
     exit 1
 
 } finally {
+    Write-Host "--- Stopping Transcript ---"
     Stop-Transcript -ErrorAction SilentlyContinue
 }
