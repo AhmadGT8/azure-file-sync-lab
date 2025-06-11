@@ -1,10 +1,10 @@
-# Final Corrected version of install-and-configure-agent.ps1
+# Final version of install-and-configure-agent.ps1 (With Defender Exclusion)
 param (
     [Parameter(Mandatory=$true)][string]$ResourceGroupName,
     [Parameter(Mandatory=$true)][string]$StorageSyncServiceName,
     [Parameter(Mandatory=$true)][string]$SyncGroupName,
-    [Parameter(Mandatory=$true)][string]$StorageAccountName, # Not used in script but passed by template
-    [Parameter(Mandatory=$true)][string]$FileShareName,      # Not used in script but passed by template
+    [Parameter(Mandatory=$true)][string]$StorageAccountName,
+    [Parameter(Mandatory=$true)][string]$FileShareName,
     [Parameter(Mandatory=$true)][string]$SubscriptionId,
     [Parameter(Mandatory=$true)][string]$TenantId,
     [Parameter(Mandatory=$true)][string]$VmLocation
@@ -20,28 +20,18 @@ try {
     Write-Host "--- Starting Script Execution ---"
     
     #================================================================================
-    # SECTION 1: PRE-PACKAGED MODULE SETUP
+    # SECTION 1 & 2: Modules and IE ESC (Working Correctly)
     #================================================================================
     $modulesZipPath = ".\AzureModules.zip"
     $modulesInstallPath = Join-Path $env:TEMP "Modules"
     Expand-Archive -Path $modulesZipPath -DestinationPath $modulesInstallPath -Force
-    
     $actualModulePath = $modulesInstallPath
     $unzippedItems = Get-ChildItem -Path $modulesInstallPath
-    if (($unzippedItems.Count -eq 1) -and ($unzippedItems[0].PSIsContainer)) {
-        $actualModulePath = $unzippedItems[0].FullName
-    }
-    
+    if (($unzippedItems.Count -eq 1) -and ($unzippedItems[0].PSIsContainer)) { $actualModulePath = $unzippedItems[0].FullName }
     $env:PSModulePath = "$actualModulePath;" + $env:PSModulePath
-
     Import-Module Az.Accounts -ErrorAction Stop
     Import-Module Az.StorageSync -ErrorAction Stop
-    Write-Host "Az modules imported successfully."
     
-    #================================================================================
-    # SECTION 2: IE ENHANCED SECURITY CONFIGURATION (ESC)
-    #================================================================================
-    Write-Host "Executing IE ESC logic..."
     $installationType = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion').InstallationType
     if ($installationType -ne 'Server Core') {
         $keyPath1 = 'HKLM:\SOFTWARE\Microsoft\Active Setup\Installed Components\{A509B1A7-37EF-4b3f-8CFC-4F3A74704073}'
@@ -50,18 +40,15 @@ try {
         if (Test-Path $keyPath2) { Set-ItemProperty -Path $keyPath2 -Name 'IsInstalled' -Value 0 -Force }
         Stop-Process -Name iexplore -ErrorAction SilentlyContinue
     }
-    Write-Host "IE ESC logic finished."
 
     #================================================================================
     # SECTION 3: AZURE FILE SYNC AGENT INSTALLATION & REGISTRATION
     #================================================================================
-    Write-Host "Connecting to Azure via VM Managed Identity..."
     Connect-AzAccount -Identity -SubscriptionId $SubscriptionId -TenantId $TenantId -ErrorAction Stop
     
     $ServerEndpointLocalPath = 'C:\SyncFolder'
     if (-not (Test-Path -Path $ServerEndpointLocalPath)) { New-Item -ItemType Directory -Force -Path $ServerEndpointLocalPath }
 
-    Write-Host "Determining OS version for agent download..."
     $osVer = [System.Environment]::OSVersion.Version
     $agentUri = switch -regex ($osVer.ToString()){
         '^10.0.17763' { "https://aka.ms/afs/agent/Server2019"; break }
@@ -72,17 +59,30 @@ try {
     $msiTempPath = Join-Path $env:TEMP "StorageSyncAgent.msi"
     Invoke-WebRequest -Uri $agentUri -OutFile $msiTempPath -UseBasicParsing
     Start-Process -FilePath "msiexec.exe" -ArgumentList "/i", "`"$msiTempPath`"", "/quiet", "/norestart" -Wait
+    
+    # --- FINAL FIX: Add a process exclusion for the File Sync agent in Microsoft Defender ---
+    Write-Host "Adding Microsoft Defender exclusion for the File Sync service process..."
+    Add-MpPreference -ExclusionProcess "filesyncsvc.exe"
+    Write-Host "Defender exclusion added."
+    # --- END FINAL FIX ---
 
     Write-Host "Registering server '$($env:COMPUTERNAME)'..."
     Register-AzStorageSyncServer -StorageSyncServiceName $StorageSyncServiceName -ResourceGroupName $ResourceGroupName -ErrorAction Stop
     
-    Write-Host "Retrieving registered server details..."
-    $registeredServer = Get-AzStorageSyncServer -StorageSyncServiceName $StorageSyncServiceName -ResourceGroupName $ResourceGroupName
-    if (-not $registeredServer -or $registeredServer.Count -ne 1) { 
-        throw "Expected to find exactly 1 registered server, but found $($registeredServer.Count)."
+    $registeredServer = Get-AzStorageSyncServer -StorageSyncServiceName $StorageSyncServiceName -ResourceGroupName $ResourceGroupName | Where-Object { $_.FriendlyName -eq $env:COMPUTERNAME }
+    if (-not $registeredServer) { throw "Failed to retrieve registered server details." }
+
+    $cloudEndpointName = "cloudEndpoint"
+    Write-Host "Verifying Cloud Endpoint '$cloudEndpointName' exists..."
+    # ... (Retry logic for cloud endpoint remains the same) ...
+    $maxRetries = 8; $retryDelaySeconds = 20
+    for ($i=1; $i -le $maxRetries; $i++) {
+        $cloudEndpoint = Get-AzStorageSyncCloudEndpoint -ResourceGroupName $ResourceGroupName -StorageSyncServiceName $StorageSyncServiceName -SyncGroupName $SyncGroupName -Name $cloudEndpointName -ErrorAction SilentlyContinue
+        if ($cloudEndpoint) { break }
+        if ($i -lt $maxRetries) { Start-Sleep -Seconds $retryDelaySeconds }
+        else { throw "Failed to find Cloud Endpoint '$cloudEndpointName' after $maxRetries attempts." }
     }
     
-    # Use a simpler name for the server endpoint, based on your successful manual test
     $serverEndpointName = $env:COMPUTERNAME
     
     Write-Host "Creating server endpoint '$serverEndpointName'..."
@@ -103,6 +103,5 @@ try {
     exit 1
 
 } finally {
-    Write-Host "--- Stopping Transcript ---"
     Stop-Transcript -ErrorAction SilentlyContinue
 }
