@@ -1,4 +1,4 @@
-# Final version of install-and-configure-agent.ps1 (All fixes included)
+# Final version of install-and-configure-agent.ps1 (With Specific Cloud Endpoint Retry Logic)
 param (
     [Parameter(Mandatory=$true)][string]$ResourceGroupName,
     [Parameter(Mandatory=$true)][string]$StorageSyncServiceName,
@@ -17,28 +17,23 @@ try {
     
     $ErrorActionPreference = 'Stop'
     $global:ProgressPreference = 'SilentlyContinue'
-    Write-Host "--- Starting Script Execution with Pre-Packaged Modules ---"
+    Write-Host "--- Starting Script Execution ---"
     
     #================================================================================
     # SECTION 1: PRE-PACKAGED MODULE SETUP
     #================================================================================
     $modulesZipPath = ".\AzureModules.zip"
     $modulesInstallPath = Join-Path $env:TEMP "Modules"
-
-    Write-Host "Expanding pre-packaged modules from '$modulesZipPath' to '$modulesInstallPath'..."
     Expand-Archive -Path $modulesZipPath -DestinationPath $modulesInstallPath -Force
 
-    # --- Logic to dynamically handle a nested folder in the ZIP file ---
     $actualModulePath = $modulesInstallPath
     $unzippedItems = Get-ChildItem -Path $modulesInstallPath
     if (($unzippedItems.Count -eq 1) -and ($unzippedItems[0].PSIsContainer)) {
         $actualModulePath = $unzippedItems[0].FullName
-        Write-Warning "Detected a single nested folder '$($unzippedItems[0].Name)'. Adjusting module path to '$actualModulePath'."
     }
     
     $env:PSModulePath = "$actualModulePath;" + $env:PSModulePath
 
-    Write-Host "Importing Az modules from pre-packaged location..."
     Import-Module Az.Accounts -ErrorAction Stop
     Import-Module Az.StorageSync -ErrorAction Stop
     Write-Host "Az modules imported successfully."
@@ -66,14 +61,12 @@ try {
     $ServerEndpointLocalPath = 'C:\SyncFolder'
     if (-not (Test-Path -Path $ServerEndpointLocalPath)) { New-Item -ItemType Directory -Force -Path $ServerEndpointLocalPath }
 
-    Write-Host "Determining OS version for agent download..."
     $osVer = [System.Environment]::OSVersion.Version
     $agentUri = switch -regex ($osVer.ToString()){
         '^10.0.17763' { "https://aka.ms/afs/agent/Server2019"; break }
         '^10.0.20348' { "https://aka.ms/afs/agent/Server2022"; break }
         default { throw "OS Version not supported for AFS Agent: $osVer" }
     }
-    
     $msiTempPath = Join-Path $env:TEMP "StorageSyncAgent.msi"
     Invoke-WebRequest -Uri $agentUri -OutFile $msiTempPath -UseBasicParsing
     Start-Process -FilePath "msiexec.exe" -ArgumentList "/i", "`"$msiTempPath`"", "/quiet", "/norestart" -Wait
@@ -84,10 +77,12 @@ try {
     $registeredServer = Get-AzStorageSyncServer -StorageSyncServiceName $StorageSyncServiceName -ResourceGroupName $ResourceGroupName | Where-Object { $_.FriendlyName -eq $env:COMPUTERNAME }
     if (-not $registeredServer) { throw "Failed to retrieve registered server details." }
 
-    # Retry loop to wait for the Cloud Endpoint to be visible
+    # --- Retry loop to handle resource propagation delay for the Cloud Endpoint ---
     $maxRetries = 8
     $retryDelaySeconds = 20
-    $cloudEndpointName = "cloudEndpoint" # This name comes from your ARM template's Cloud Endpoint resource
+    # The Cloud Endpoint name in the ARM template is 'cloudEndpoint'
+    $cloudEndpointName = "cloudEndpoint"
+
     Write-Host "Verifying Cloud Endpoint '$cloudEndpointName' exists in Sync Group '$SyncGroupName'..."
     for ($i=1; $i -le $maxRetries; $i++) {
         $cloudEndpoint = Get-AzStorageSyncCloudEndpoint -ResourceGroupName $ResourceGroupName -StorageSyncServiceName $StorageSyncServiceName -SyncGroupName $SyncGroupName -Name $cloudEndpointName -ErrorAction SilentlyContinue
@@ -96,10 +91,10 @@ try {
             break
         }
         if ($i -lt $maxRetries) {
-             Write-Warning "Cloud Endpoint '$cloudEndpointName' not found on attempt $i. Waiting $retryDelaySeconds seconds..."
+             Write-Warning "Cloud Endpoint '$cloudEndpointName' not found on attempt $i. This is likely a propagation delay. Waiting $retryDelaySeconds seconds..."
              Start-Sleep -Seconds $retryDelaySeconds
         } else {
-            throw "Failed to find Cloud Endpoint '$cloudEndpointName' after $maxRetries attempts."
+            throw "Failed to find Cloud Endpoint '$cloudEndpointName' in Sync Group '$SyncGroupName' after $maxRetries attempts."
         }
     }
     
